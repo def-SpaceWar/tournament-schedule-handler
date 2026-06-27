@@ -103,6 +103,8 @@
     let detailsP2ScoreInput = $state("");
     let detailsStartTimeInput = $state("");
     let detailsWinnerInput = $state<string>("");
+    let detailsSaving = $state(false);
+    let detailsSaveError = $state<string>("");
 
     // Stadium management state
     let dbStadiums = $state<Stadium[]>([]);
@@ -122,7 +124,7 @@
         championshipTop = $state<number>(0);
 
     const NODE_HEIGHT = 80,
-        MIN_VERTICAL_GAP = 48,
+        MIN_VERTICAL_GAP = 64,
         TOTAL_NODE_SPACING = NODE_HEIGHT + MIN_VERTICAL_GAP;
 
     // --- Real-Time Synchronizer Effect ---
@@ -530,6 +532,63 @@
         return { wb: wbRounds, lb: lbRounds, connections };
     });
 
+    // --- Live Progression Map (winner/loser destinations) ---
+    // This is the single source of truth for "where does this match's winner/loser go next".
+    // It is derived fresh from bracketData.connections every time, rather than relying on
+    // nextMatchId/loserMatchId fields stored on the Firestore match doc - those fields are
+    // never written anywhere, so trusting them caused both the "TBD" display bug and the
+    // "No document to update" Firestore errors when propagation tried to write to a match
+    // that was computed as a destination but never actually persisted.
+    let progressionMap = $derived.by(() => {
+        const map: Record<
+            string,
+            {
+                nextMatchId: string | null;
+                nextSlot: "p1" | "p2" | null;
+                loserMatchId: string | null;
+                loserSlot: "p1" | "p2" | null;
+            }
+        > = {};
+        for (const conn of bracketData.connections) {
+            if (!map[conn.fromId]) {
+                map[conn.fromId] = {
+                    nextMatchId: null,
+                    nextSlot: null,
+                    loserMatchId: null,
+                    loserSlot: null,
+                };
+            }
+            if (conn.type === "winner") {
+                map[conn.fromId].nextMatchId = conn.toId;
+                map[conn.fromId].nextSlot = conn.toSlot;
+            } else {
+                map[conn.fromId].loserMatchId = conn.toId;
+                map[conn.fromId].loserSlot = conn.toSlot;
+            }
+        }
+        return map;
+    });
+
+    // Lookup helper: given a short match id (e.g. "WB-R1-M1"), find the live-computed
+    // display label for that node, e.g. "Default: Winner WB-R1-M1", an actual team name,
+    // or "BYE". Falls back to "TBD" only if the match genuinely can't be found anywhere
+    // in the current bracket layout (e.g. stale/orphaned id).
+    function findComputedMatch(
+        matchId: string | null | undefined,
+    ): Match | undefined {
+        if (!matchId) return undefined;
+        if (matchId === "CHAMPIONSHIP") return undefined;
+        for (const round of bracketData.wb) {
+            const found = round.find((m) => m.id === matchId);
+            if (found) return found;
+        }
+        for (const round of bracketData.lb) {
+            const found = round.find((m) => m.id === matchId);
+            if (found) return found;
+        }
+        return undefined;
+    }
+
     // --- Node Coordinates Calculation Layout Engine ---
     let yPositions = $derived.by(() => {
         const pos: Record<string, number> = {};
@@ -763,41 +822,58 @@
             "bracket",
             matchId,
         );
-        await updateDoc(matchRef, { winner: winnerTeamId });
 
-        if (currentMatch.nextMatchId && currentMatch.nextSlot) {
-            const nextMatchRef = doc(
-                firestore,
-                "sports",
-                sport,
-                "groups",
-                bracketId,
-                "bracket",
-                currentMatch.nextMatchId,
-            );
-            await updateDoc(nextMatchRef, {
-                [currentMatch.nextSlot]: winnerTeamId,
-            });
-        }
+        try {
+            await setDoc(matchRef, { winner: winnerTeamId }, { merge: true });
 
-        if (
-            currentMatch.loserMatchId &&
-            currentMatch.loserSlot &&
-            loserTeamId &&
-            loserTeamId !== "BYE"
-        ) {
-            const loserMatchRef = doc(
-                firestore,
-                "sports",
-                sport,
-                "groups",
-                bracketId,
-                "bracket",
-                currentMatch.loserMatchId,
-            );
-            await updateDoc(loserMatchRef, {
-                [currentMatch.loserSlot]: loserTeamId,
-            });
+            // Always derive next/loser destinations from the live progression map
+            // (computed from the current bracket layout) rather than trusting
+            // possibly-stale/never-set fields on the Firestore doc itself.
+            const progression = progressionMap[matchId];
+
+            if (progression?.nextMatchId && progression?.nextSlot) {
+                const nextMatchRef = doc(
+                    firestore,
+                    "sports",
+                    sport,
+                    "groups",
+                    bracketId,
+                    "bracket",
+                    progression.nextMatchId,
+                );
+                // setDoc + merge instead of updateDoc: the destination match doc may
+                // not exist yet in Firestore (it's a layout-inferred node), and
+                // updateDoc throws "No document to update" in that case.
+                await setDoc(
+                    nextMatchRef,
+                    { [progression.nextSlot]: winnerTeamId },
+                    { merge: true },
+                );
+            }
+
+            if (
+                progression?.loserMatchId &&
+                progression?.loserSlot &&
+                loserTeamId &&
+                loserTeamId !== "BYE"
+            ) {
+                const loserMatchRef = doc(
+                    firestore,
+                    "sports",
+                    sport,
+                    "groups",
+                    bracketId,
+                    "bracket",
+                    progression.loserMatchId,
+                );
+                await setDoc(
+                    loserMatchRef,
+                    { [progression.loserSlot]: loserTeamId },
+                    { merge: true },
+                );
+            }
+        } catch (error) {
+            console.error("Failed to declare winner:", error);
         }
     }
 
@@ -805,6 +881,7 @@
     function openMatchDetails(matchId: string) {
         const dbM = dbMatches[matchId];
         activeDetailsMatchId = matchId;
+        detailsSaveError = "";
         detailsStadiumInput = dbM?.stadium || "";
         detailsStadiumIdInput = dbM?.stadiumId || "";
         detailsIsLiveInput = !!dbM?.isLive;
@@ -829,6 +906,7 @@
 
     function closeMatchDetails() {
         activeDetailsMatchId = null;
+        detailsSaveError = "";
     }
 
     async function handleSaveMatchDetails() {
@@ -851,76 +929,55 @@
         const newWinner = detailsWinnerInput || null;
         const oldWinner = currentMatch?.winner || null;
 
-        // Persist core match fields
-        await setDoc(
-            matchRef,
-            {
-                stadiumId: detailsStadiumIdInput || null,
-                stadium:
-                    selectedStadium?.name || detailsStadiumInput.trim() || null,
-                isLive: detailsIsLiveInput,
-                startTime: detailsStartTimeInput
-                    ? new Date(detailsStartTimeInput).toISOString()
-                    : null,
-                winner: newWinner,
-                p1Score:
-                    detailsP1ScoreInput.trim() !== "" &&
-                    !isNaN(Number(detailsP1ScoreInput))
-                        ? Number(detailsP1ScoreInput)
+        detailsSaving = true;
+        detailsSaveError = "";
+        try {
+            // Persist core match fields
+            await setDoc(
+                matchRef,
+                {
+                    stadiumId: detailsStadiumIdInput || null,
+                    stadium:
+                        selectedStadium?.name ||
+                        detailsStadiumInput.trim() ||
+                        null,
+                    isLive: detailsIsLiveInput,
+                    startTime: detailsStartTimeInput
+                        ? new Date(detailsStartTimeInput).toISOString()
                         : null,
-                p2Score:
-                    detailsP2ScoreInput.trim() !== "" &&
-                    !isNaN(Number(detailsP2ScoreInput))
-                        ? Number(detailsP2ScoreInput)
-                        : null,
-            },
-            { merge: true },
-        );
+                    winner: newWinner,
+                    p1Score:
+                        detailsP1ScoreInput.trim() !== "" &&
+                        !isNaN(Number(detailsP1ScoreInput))
+                            ? Number(detailsP1ScoreInput)
+                            : null,
+                    p2Score:
+                        detailsP2ScoreInput.trim() !== "" &&
+                        !isNaN(Number(detailsP2ScoreInput))
+                            ? Number(detailsP2ScoreInput)
+                            : null,
+                },
+                { merge: true },
+            );
 
-        // Propagate winner change to next/loser match slots
-        if (newWinner !== oldWinner && currentMatch) {
-            const loserTeamId =
-                newWinner === currentMatch.p1
-                    ? currentMatch.p2
-                    : currentMatch.p1;
+            // Propagate winner change to next/loser match slots.
+            // Destinations are derived from progressionMap - the live-computed bracket
+            // layout - rather than currentMatch.nextMatchId/loserMatchId, which are
+            // never actually written to Firestore by any part of this app and so are
+            // always undefined on a freshly-created or auto-inferred match doc.
+            if (newWinner !== oldWinner && currentMatch) {
+                const loserTeamId =
+                    newWinner === currentMatch.p1
+                        ? currentMatch.p2
+                        : currentMatch.p1;
+                const progression = progressionMap[matchId];
 
-            // Clear slots set by old winner propagation
-            if (
-                oldWinner &&
-                currentMatch.nextMatchId &&
-                currentMatch.nextSlot
-            ) {
-                const nextRef = doc(
-                    firestore,
-                    "sports",
-                    sport,
-                    "groups",
-                    bracketId,
-                    "bracket",
-                    currentMatch.nextMatchId,
-                );
-                await updateDoc(nextRef, { [currentMatch.nextSlot]: null });
-            }
-            if (
-                oldWinner &&
-                currentMatch.loserMatchId &&
-                currentMatch.loserSlot
-            ) {
-                const loserRef = doc(
-                    firestore,
-                    "sports",
-                    sport,
-                    "groups",
-                    bracketId,
-                    "bracket",
-                    currentMatch.loserMatchId,
-                );
-                await updateDoc(loserRef, { [currentMatch.loserSlot]: null });
-            }
-
-            // Set new propagation
-            if (newWinner) {
-                if (currentMatch.nextMatchId && currentMatch.nextSlot) {
+                // Clear slots set by old winner propagation
+                if (
+                    oldWinner &&
+                    progression?.nextMatchId &&
+                    progression?.nextSlot
+                ) {
                     const nextRef = doc(
                         firestore,
                         "sports",
@@ -928,17 +985,21 @@
                         "groups",
                         bracketId,
                         "bracket",
-                        currentMatch.nextMatchId,
+                        progression.nextMatchId,
                     );
-                    await updateDoc(nextRef, {
-                        [currentMatch.nextSlot]: newWinner,
-                    });
+                    // setDoc+merge: the target match may not have a Firestore doc yet
+                    // (it's a layout-inferred node) - updateDoc would throw
+                    // "No document to update" in that case.
+                    await setDoc(
+                        nextRef,
+                        { [progression.nextSlot]: null },
+                        { merge: true },
+                    );
                 }
                 if (
-                    currentMatch.loserMatchId &&
-                    currentMatch.loserSlot &&
-                    loserTeamId &&
-                    loserTeamId !== "BYE"
+                    oldWinner &&
+                    progression?.loserMatchId &&
+                    progression?.loserSlot
                 ) {
                     const loserRef = doc(
                         firestore,
@@ -947,16 +1008,65 @@
                         "groups",
                         bracketId,
                         "bracket",
-                        currentMatch.loserMatchId,
+                        progression.loserMatchId,
                     );
-                    await updateDoc(loserRef, {
-                        [currentMatch.loserSlot]: loserTeamId,
-                    });
+                    await setDoc(
+                        loserRef,
+                        { [progression.loserSlot]: null },
+                        { merge: true },
+                    );
+                }
+
+                // Set new propagation
+                if (newWinner) {
+                    if (progression?.nextMatchId && progression?.nextSlot) {
+                        const nextRef = doc(
+                            firestore,
+                            "sports",
+                            sport,
+                            "groups",
+                            bracketId,
+                            "bracket",
+                            progression.nextMatchId,
+                        );
+                        await setDoc(
+                            nextRef,
+                            { [progression.nextSlot]: newWinner },
+                            { merge: true },
+                        );
+                    }
+                    if (
+                        progression?.loserMatchId &&
+                        progression?.loserSlot &&
+                        loserTeamId &&
+                        loserTeamId !== "BYE"
+                    ) {
+                        const loserRef = doc(
+                            firestore,
+                            "sports",
+                            sport,
+                            "groups",
+                            bracketId,
+                            "bracket",
+                            progression.loserMatchId,
+                        );
+                        await setDoc(
+                            loserRef,
+                            { [progression.loserSlot]: loserTeamId },
+                            { merge: true },
+                        );
+                    }
                 }
             }
-        }
 
-        activeDetailsMatchId = null;
+            activeDetailsMatchId = null;
+        } catch (error: any) {
+            console.error("Failed to save match details:", error);
+            detailsSaveError =
+                error?.message || "Failed to save. Please try again.";
+        } finally {
+            detailsSaving = false;
+        }
     }
 
     // --- Stadium CRUD ---
@@ -1480,31 +1590,39 @@
                                     >
                                         {#if dbM?.stadium || dbM?.isLive || dbM?.startTime}
                                             <div class="match-status-strip">
-                                                {#if dbM?.isLive}
-                                                    <span class="live-pill"
-                                                        >● LIVE</span
-                                                    >
-                                                {/if}
-                                                {#if dbM?.stadium}
-                                                    <span class="stadium-pill"
-                                                        >{dbM.stadium}</span
-                                                    >
-                                                {/if}
                                                 {#if !dbM?.isLive && dbM?.startTime}
                                                     {@const timeLabel =
                                                         getStartTimeLabel(dbM)}
                                                     {#if timeLabel}
-                                                        <span
-                                                            class="start-time-pill {getStartTimeLabel(
-                                                                dbM,
-                                                            )?.startsWith(
-                                                                'Starting',
-                                                            )
-                                                                ? 'start-time-soon'
-                                                                : ''}"
-                                                            >{timeLabel}</span
-                                                        >
+                                                        <div class="status-row">
+                                                            <span
+                                                                class="start-time-pill {timeLabel.startsWith(
+                                                                    'Starting',
+                                                                )
+                                                                    ? 'start-time-soon'
+                                                                    : ''}"
+                                                                >{timeLabel}</span
+                                                            >
+                                                        </div>
                                                     {/if}
+                                                {/if}
+                                                {#if dbM?.isLive || dbM?.stadium}
+                                                    <div
+                                                        class="status-row status-row-stadium"
+                                                    >
+                                                        {#if dbM?.isLive}
+                                                            <span
+                                                                class="live-pill"
+                                                                >● LIVE</span
+                                                            >
+                                                        {/if}
+                                                        {#if dbM?.stadium}
+                                                            <span
+                                                                class="stadium-pill"
+                                                                >{dbM.stadium}</span
+                                                            >
+                                                        {/if}
+                                                    </div>
                                                 {/if}
                                             </div>
                                         {/if}
@@ -1691,32 +1809,43 @@
                                         >
                                             {#if dbM?.stadium || dbM?.isLive || dbM?.startTime}
                                                 <div class="match-status-strip">
-                                                    {#if dbM?.isLive}
-                                                        <span class="live-pill"
-                                                            >● LIVE</span
-                                                        >
-                                                    {/if}
-                                                    {#if dbM?.stadium}
-                                                        <span
-                                                            class="stadium-pill"
-                                                            >{dbM.stadium}</span
-                                                        >
-                                                    {/if}
                                                     {#if !dbM?.isLive && dbM?.startTime}
                                                         {@const timeLabel =
                                                             getStartTimeLabel(
                                                                 dbM,
                                                             )}
                                                         {#if timeLabel}
-                                                            <span
-                                                                class="start-time-pill {timeLabel.startsWith(
-                                                                    'Starting',
-                                                                )
-                                                                    ? 'start-time-soon'
-                                                                    : ''}"
-                                                                >{timeLabel}</span
+                                                            <div
+                                                                class="status-row"
                                                             >
+                                                                <span
+                                                                    class="start-time-pill {timeLabel.startsWith(
+                                                                        'Starting',
+                                                                    )
+                                                                        ? 'start-time-soon'
+                                                                        : ''}"
+                                                                    >{timeLabel}</span
+                                                                >
+                                                            </div>
                                                         {/if}
+                                                    {/if}
+                                                    {#if dbM?.isLive || dbM?.stadium}
+                                                        <div
+                                                            class="status-row status-row-stadium"
+                                                        >
+                                                            {#if dbM?.isLive}
+                                                                <span
+                                                                    class="live-pill"
+                                                                    >● LIVE</span
+                                                                >
+                                                            {/if}
+                                                            {#if dbM?.stadium}
+                                                                <span
+                                                                    class="stadium-pill"
+                                                                    >{dbM.stadium}</span
+                                                                >
+                                                            {/if}
+                                                        </div>
                                                     {/if}
                                                 </div>
                                             {/if}
@@ -1907,25 +2036,31 @@
                 >
                     {#if dbChamp?.stadium || dbChamp?.isLive || dbChamp?.startTime}
                         <div class="match-status-strip">
-                            {#if dbChamp?.isLive}
-                                <span class="live-pill">● LIVE</span>
-                            {/if}
-                            {#if dbChamp?.stadium}
-                                <span class="stadium-pill"
-                                    >{dbChamp.stadium}</span
-                                >
-                            {/if}
                             {#if !dbChamp?.isLive && dbChamp?.startTime}
                                 {@const timeLabel = getStartTimeLabel(dbChamp)}
                                 {#if timeLabel}
-                                    <span
-                                        class="start-time-pill {timeLabel.startsWith(
-                                            'Starting',
-                                        )
-                                            ? 'start-time-soon'
-                                            : ''}">{timeLabel}</span
-                                    >
+                                    <div class="status-row">
+                                        <span
+                                            class="start-time-pill {timeLabel.startsWith(
+                                                'Starting',
+                                            )
+                                                ? 'start-time-soon'
+                                                : ''}">{timeLabel}</span
+                                        >
+                                    </div>
                                 {/if}
+                            {/if}
+                            {#if dbChamp?.isLive || dbChamp?.stadium}
+                                <div class="status-row status-row-stadium">
+                                    {#if dbChamp?.isLive}
+                                        <span class="live-pill">● LIVE</span>
+                                    {/if}
+                                    {#if dbChamp?.stadium}
+                                        <span class="stadium-pill"
+                                            >{dbChamp.stadium}</span
+                                        >
+                                    {/if}
+                                </div>
                             {/if}
                         </div>
                     {/if}
@@ -2063,10 +2198,21 @@
 
 {#if activeDetailsMatchId}
     {@const detailsMatch = dbMatches[activeDetailsMatchId]}
+    {@const computedMatch = findComputedMatch(activeDetailsMatchId)}
     {@const p1Team = dbTeams.find((t) => t.id === detailsMatch?.p1)}
     {@const p2Team = dbTeams.find((t) => t.id === detailsMatch?.p2)}
-    {@const p1Name = detailsMatch?.p1 === "BYE" ? "BYE" : p1Team?.name || "TBD"}
-    {@const p2Name = detailsMatch?.p2 === "BYE" ? "BYE" : p2Team?.name || "TBD"}
+    {@const p1Fallback =
+        activeDetailsMatchId === "CHAMPIONSHIP"
+            ? "Winners Undefeated"
+            : computedMatch?.p1 || "TBD"}
+    {@const p2Fallback =
+        activeDetailsMatchId === "CHAMPIONSHIP"
+            ? "Losers Survivor"
+            : computedMatch?.p2 || "TBD"}
+    {@const p1Name =
+        detailsMatch?.p1 === "BYE" ? "BYE" : p1Team?.name || p1Fallback}
+    {@const p2Name =
+        detailsMatch?.p2 === "BYE" ? "BYE" : p2Team?.name || p2Fallback}
     {@const matchLivestream = getLivestreamForMatch(detailsMatch)}
     <div
         class="match-modal-backdrop"
@@ -2242,12 +2388,19 @@
                         />
                         <span>Mark this match as live</span>
                     </label>
+
+                    {#if detailsSaveError}
+                        <div class="match-modal-save-error">
+                            ⚠️ {detailsSaveError}
+                        </div>
+                    {/if}
                 </div>
                 <div class="match-modal-footer">
                     <button
                         type="button"
                         class="admin-btn secondary-variant"
                         onclick={closeMatchDetails}
+                        disabled={detailsSaving}
                     >
                         Cancel
                     </button>
@@ -2255,8 +2408,9 @@
                         type="button"
                         class="admin-btn"
                         onclick={handleSaveMatchDetails}
+                        disabled={detailsSaving}
                     >
-                        Save
+                        {detailsSaving ? "Saving…" : "Save"}
                     </button>
                 </div>
             {:else}
@@ -2583,11 +2737,21 @@
     }
 
     /* --- Live / Stadium / Time status strip — floats above the match card --- */
+    /* Two stacked rows instead of one cramped flex row: this avoids the stadium
+       name + start time clipping/overflowing each other when both are present.
+       Row 1 (top): start time. Row 2 (bottom, touching the card): live + stadium. */
     .match-status-strip {
         position: absolute;
         bottom: 100%;
         left: -1px;
         right: -1px;
+        display: flex;
+        flex-direction: column;
+        gap: 0;
+        pointer-events: none;
+        z-index: 3;
+    }
+    .match-status-strip .status-row {
         display: flex;
         align-items: center;
         gap: 0.35rem;
@@ -2595,12 +2759,17 @@
         background: #fff8f8;
         border: 1px solid #fca5a5;
         border-bottom: none;
-        border-radius: 4px 4px 0 0;
-        flex-wrap: nowrap;
-        white-space: nowrap;
         overflow: hidden;
-        pointer-events: none;
-        z-index: 3;
+        min-width: 0;
+    }
+    .match-status-strip .status-row:first-child {
+        border-radius: 4px 4px 0 0;
+    }
+    .match-status-strip .status-row.status-row-stadium {
+        background: #f8fafc;
+    }
+    .match-status-strip .status-row.status-row-stadium:not(:first-child) {
+        border-top: 1px solid #fca5a5;
     }
     .live-pill {
         font-size: 0.65rem;
@@ -2608,6 +2777,8 @@
         color: #dc2626;
         text-transform: uppercase;
         letter-spacing: 0.04em;
+        white-space: nowrap;
+        flex-shrink: 0;
         animation: livePulse 1.6s ease-in-out infinite;
     }
     @keyframes livePulse {
@@ -2626,6 +2797,10 @@
         background: #e2e8f0;
         padding: 0.1rem 0.4rem;
         border-radius: 4px;
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        min-width: 0;
     }
 
     /* --- Inline team logos --- */
@@ -2835,6 +3010,19 @@
         color: #334155;
         cursor: pointer;
     }
+    .match-modal-save-error {
+        font-size: 0.8rem;
+        font-weight: 500;
+        color: #991b1b;
+        background: #fef2f2;
+        border: 1px solid #fca5a5;
+        border-radius: 6px;
+        padding: 0.5rem 0.65rem;
+    }
+    .match-modal-footer button:disabled {
+        opacity: 0.6;
+        cursor: not-allowed;
+    }
     .match-modal-readonly-line {
         margin: 0;
         font-size: 0.85rem;
@@ -2862,6 +3050,11 @@
         background: #e2e8f0;
         padding: 0.1rem 0.4rem;
         border-radius: 4px;
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        min-width: 0;
+        flex: 1;
     }
     .start-time-pill.start-time-soon {
         background: #fef3c7;
