@@ -852,26 +852,30 @@
         const oldWinner = currentMatch?.winner || null;
 
         // Persist core match fields
-        await updateDoc(matchRef, {
-            stadiumId: detailsStadiumIdInput || null,
-            stadium:
-                selectedStadium?.name || detailsStadiumInput.trim() || null,
-            isLive: detailsIsLiveInput,
-            startTime: detailsStartTimeInput
-                ? new Date(detailsStartTimeInput).toISOString()
-                : null,
-            winner: newWinner,
-            p1Score:
-                detailsP1ScoreInput.trim() !== "" &&
-                !isNaN(Number(detailsP1ScoreInput))
-                    ? Number(detailsP1ScoreInput)
+        await setDoc(
+            matchRef,
+            {
+                stadiumId: detailsStadiumIdInput || null,
+                stadium:
+                    selectedStadium?.name || detailsStadiumInput.trim() || null,
+                isLive: detailsIsLiveInput,
+                startTime: detailsStartTimeInput
+                    ? new Date(detailsStartTimeInput).toISOString()
                     : null,
-            p2Score:
-                detailsP2ScoreInput.trim() !== "" &&
-                !isNaN(Number(detailsP2ScoreInput))
-                    ? Number(detailsP2ScoreInput)
-                    : null,
-        });
+                winner: newWinner,
+                p1Score:
+                    detailsP1ScoreInput.trim() !== "" &&
+                    !isNaN(Number(detailsP1ScoreInput))
+                        ? Number(detailsP1ScoreInput)
+                        : null,
+                p2Score:
+                    detailsP2ScoreInput.trim() !== "" &&
+                    !isNaN(Number(detailsP2ScoreInput))
+                        ? Number(detailsP2ScoreInput)
+                        : null,
+            },
+            { merge: true },
+        );
 
         // Propagate winner change to next/loser match slots
         if (newWinner !== oldWinner && currentMatch) {
