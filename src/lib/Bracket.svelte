@@ -1660,227 +1660,14 @@
                             <div class="vertical-nodes-box">
                                 {#each round as match}
                                     {@const dbM = dbMatches[match.id]}
-                                    <div
-                                        class="match-node-card {dbM?.isLive
-                                            ? 'match-card-live'
-                                            : ''}"
-                                        style="position: absolute; top: {yPositions[
-                                            match.id
-                                        ] || 0}px;"
-                                        data-match-id={match.id}
-                                        onclick={() =>
-                                            openMatchDetails(match.id)}
-                                        role="button"
-                                        tabindex="0"
-                                    >
-                                        {#if dbM?.stadium || dbM?.isLive || dbM?.startTime}
-                                            <div class="match-status-strip">
-                                                {#if !dbM?.isLive && dbM?.startTime}
-                                                    {@const timeLabel =
-                                                        getStartTimeLabel(dbM)}
-                                                    {#if timeLabel}
-                                                        <div class="status-row">
-                                                            <span
-                                                                class="start-time-pill {timeLabel.startsWith(
-                                                                    'Starting',
-                                                                )
-                                                                    ? 'start-time-soon'
-                                                                    : ''}"
-                                                                >{timeLabel}</span
-                                                            >
-                                                        </div>
-                                                    {/if}
-                                                {/if}
-                                                {#if dbM?.isLive || dbM?.stadium}
-                                                    <div
-                                                        class="status-row status-row-stadium"
-                                                    >
-                                                        {#if dbM?.isLive}
-                                                            <span
-                                                                class="live-pill"
-                                                                >● LIVE</span
-                                                            >
-                                                        {/if}
-                                                        {#if dbM?.stadium}
-                                                            <span
-                                                                class="stadium-pill"
-                                                                >{dbM.stadium}</span
-                                                            >
-                                                        {/if}
-                                                    </div>
-                                                {/if}
-                                            </div>
-                                        {/if}
+                                    {@const hasBye =
+                                        match.p1 === "BYE" ||
+                                        dbM?.p1 === "BYE" ||
+                                        match.p2 === "BYE" ||
+                                        dbM?.p2 === "BYE"}
+                                    {#if isAdmin || !hasBye}
                                         <div
-                                            class="competitor-slot {match.p1 ===
-                                            'BYE'
-                                                ? 'bye-slot'
-                                                : ''} {dbM?.winner &&
-                                            dbM.winner === dbM.p1
-                                                ? 'winner-highlight'
-                                                : ''}"
-                                            data-slot="p1"
-                                        >
-                                            {#if isAdmin}
-                                                <div
-                                                    class="slot-flex-row"
-                                                    onclick={(e) =>
-                                                        e.stopPropagation()}
-                                                >
-                                                    <select
-                                                        value={dbM?.p1 || ""}
-                                                        onchange={(e) =>
-                                                            handleUpdateMatchSlot(
-                                                                match.id,
-                                                                "p1",
-                                                                e.currentTarget
-                                                                    .value,
-                                                            )}
-                                                        class="slot-embed-select"
-                                                    >
-                                                        <option value=""
-                                                            >Default: {match.p1}</option
-                                                        >
-                                                        <option value="BYE"
-                                                            >BYE</option
-                                                        >
-                                                        {#each dbTeams as team}
-                                                            <option
-                                                                value={team.id}
-                                                                >{team.name}</option
-                                                            >
-                                                        {/each}
-                                                    </select>
-                                                    <span
-                                                        class="match-score-badge"
-                                                        >{dbM?.isLive
-                                                            ? "?"
-                                                            : (dbM?.p1Score ??
-                                                              "-")}</span
-                                                    >
-                                                </div>
-                                            {:else}
-                                                <div class="user-slot-row">
-                                                    <span class="team-identity">
-                                                        {#if teamLogoFor(dbM?.p1)}
-                                                            <img
-                                                                src={teamLogoFor(
-                                                                    dbM?.p1,
-                                                                )}
-                                                                alt=""
-                                                                class="team-logo-inline"
-                                                            />
-                                                        {/if}
-                                                        {match.p1}
-                                                    </span>
-                                                    <span
-                                                        class="match-score-badge"
-                                                        >{dbM?.isLive
-                                                            ? "?"
-                                                            : (dbM?.p1Score ??
-                                                              "-")}</span
-                                                    >
-                                                </div>
-                                            {/if}
-                                        </div>
-
-                                        <div
-                                            class="competitor-slot {match.p2 ===
-                                            'BYE'
-                                                ? 'bye-slot'
-                                                : ''} {dbM?.winner &&
-                                            dbM.winner === dbM.p2
-                                                ? 'winner-highlight'
-                                                : ''}"
-                                            data-slot="p2"
-                                        >
-                                            {#if isAdmin}
-                                                <div
-                                                    class="slot-flex-row"
-                                                    onclick={(e) =>
-                                                        e.stopPropagation()}
-                                                >
-                                                    <select
-                                                        value={dbM?.p2 || ""}
-                                                        onchange={(e) =>
-                                                            handleUpdateMatchSlot(
-                                                                match.id,
-                                                                "p2",
-                                                                e.currentTarget
-                                                                    .value,
-                                                            )}
-                                                        class="slot-embed-select"
-                                                    >
-                                                        <option value=""
-                                                            >Default: {match.p2}</option
-                                                        >
-                                                        <option value="BYE"
-                                                            >BYE</option
-                                                        >
-                                                        {#each dbTeams as team}
-                                                            <option
-                                                                value={team.id}
-                                                                >{team.name}</option
-                                                            >
-                                                        {/each}
-                                                    </select>
-                                                    <span
-                                                        class="match-score-badge"
-                                                        >{dbM?.isLive
-                                                            ? "?"
-                                                            : (dbM?.p2Score ??
-                                                              "-")}</span
-                                                    >
-                                                </div>
-                                            {:else}
-                                                <div class="user-slot-row">
-                                                    <span class="team-identity">
-                                                        {#if teamLogoFor(dbM?.p2)}
-                                                            <img
-                                                                src={teamLogoFor(
-                                                                    dbM?.p2,
-                                                                )}
-                                                                alt=""
-                                                                class="team-logo-inline"
-                                                            />
-                                                        {/if}
-                                                        {match.p2}
-                                                    </span>
-                                                    <span
-                                                        class="match-score-badge"
-                                                        >{dbM?.isLive
-                                                            ? "?"
-                                                            : (dbM?.p2Score ??
-                                                              "-")}</span
-                                                    >
-                                                </div>
-                                            {/if}
-                                        </div>
-                                    </div>
-                                {/each}
-                            </div>
-                        </div>
-                    {/each}
-                </div>
-            </div>
-
-            {#if doubleElimEnabled && bracketData.lb.length > 0}
-                <div class="bracket-row-lane">
-                    <div class="lane-title style-l">Losers Bracket</div>
-                    <div
-                        class="columns-row"
-                        style="height: {laneHeights.lb}px;"
-                    >
-                        {#each bracketData.lb as round, rIdx}
-                            <div class="tree-column">
-                                <div class="round-label">
-                                    LB Round {rIdx + 1}
-                                </div>
-                                <div class="vertical-nodes-box">
-                                    {#each round as match}
-                                        {@const dbM = dbMatches[match.id]}
-                                        <div
-                                            class="match-node-card lb-variant {dbM?.isLive
+                                            class="match-node-card {dbM?.isLive
                                                 ? 'match-card-live'
                                                 : ''}"
                                             style="position: absolute; top: {yPositions[
@@ -2088,6 +1875,253 @@
                                                 {/if}
                                             </div>
                                         </div>
+                                    {/if}
+                                {/each}
+                            </div>
+                        </div>
+                    {/each}
+                </div>
+            </div>
+
+            {#if doubleElimEnabled && bracketData.lb.length > 0}
+                <div class="bracket-row-lane">
+                    <div class="lane-title style-l">Losers Bracket</div>
+                    <div
+                        class="columns-row"
+                        style="height: {laneHeights.lb}px;"
+                    >
+                        {#each bracketData.lb as round, rIdx}
+                            <div class="tree-column">
+                                <div class="round-label">
+                                    LB Round {rIdx + 1}
+                                </div>
+                                <div class="vertical-nodes-box">
+                                    {#each round as match}
+                                        {@const dbM = dbMatches[match.id]}
+                                        {@const hasBye =
+                                            match.p1 === "BYE" ||
+                                            dbM?.p1 === "BYE" ||
+                                            match.p2 === "BYE" ||
+                                            dbM?.p2 === "BYE"}
+                                        {#if isAdmin || !hasBye}
+                                            <div
+                                                class="match-node-card lb-variant {dbM?.isLive
+                                                    ? 'match-card-live'
+                                                    : ''}"
+                                                style="position: absolute; top: {yPositions[
+                                                    match.id
+                                                ] || 0}px;"
+                                                data-match-id={match.id}
+                                                onclick={() =>
+                                                    openMatchDetails(match.id)}
+                                                role="button"
+                                                tabindex="0"
+                                            >
+                                                {#if dbM?.stadium || dbM?.isLive || dbM?.startTime}
+                                                    <div
+                                                        class="match-status-strip"
+                                                    >
+                                                        {#if !dbM?.isLive && dbM?.startTime}
+                                                            {@const timeLabel =
+                                                                getStartTimeLabel(
+                                                                    dbM,
+                                                                )}
+                                                            {#if timeLabel}
+                                                                <div
+                                                                    class="status-row"
+                                                                >
+                                                                    <span
+                                                                        class="start-time-pill {timeLabel.startsWith(
+                                                                            'Starting',
+                                                                        )
+                                                                            ? 'start-time-soon'
+                                                                            : ''}"
+                                                                        >{timeLabel}</span
+                                                                    >
+                                                                </div>
+                                                            {/if}
+                                                        {/if}
+                                                        {#if dbM?.isLive || dbM?.stadium}
+                                                            <div
+                                                                class="status-row status-row-stadium"
+                                                            >
+                                                                {#if dbM?.isLive}
+                                                                    <span
+                                                                        class="live-pill"
+                                                                        >● LIVE</span
+                                                                    >
+                                                                {/if}
+                                                                {#if dbM?.stadium}
+                                                                    <span
+                                                                        class="stadium-pill"
+                                                                        >{dbM.stadium}</span
+                                                                    >
+                                                                {/if}
+                                                            </div>
+                                                        {/if}
+                                                    </div>
+                                                {/if}
+                                                <div
+                                                    class="competitor-slot {match.p1 ===
+                                                    'BYE'
+                                                        ? 'bye-slot'
+                                                        : ''} {dbM?.winner &&
+                                                    dbM.winner === dbM.p1
+                                                        ? 'winner-highlight'
+                                                        : ''}"
+                                                    data-slot="p1"
+                                                >
+                                                    {#if isAdmin}
+                                                        <div
+                                                            class="slot-flex-row"
+                                                            onclick={(e) =>
+                                                                e.stopPropagation()}
+                                                        >
+                                                            <select
+                                                                value={dbM?.p1 ||
+                                                                    ""}
+                                                                onchange={(e) =>
+                                                                    handleUpdateMatchSlot(
+                                                                        match.id,
+                                                                        "p1",
+                                                                        e
+                                                                            .currentTarget
+                                                                            .value,
+                                                                    )}
+                                                                class="slot-embed-select"
+                                                            >
+                                                                <option value=""
+                                                                    >Default: {match.p1}</option
+                                                                >
+                                                                <option
+                                                                    value="BYE"
+                                                                    >BYE</option
+                                                                >
+                                                                {#each dbTeams as team}
+                                                                    <option
+                                                                        value={team.id}
+                                                                        >{team.name}</option
+                                                                    >
+                                                                {/each}
+                                                            </select>
+                                                            <span
+                                                                class="match-score-badge"
+                                                                >{dbM?.isLive
+                                                                    ? "?"
+                                                                    : (dbM?.p1Score ??
+                                                                      "-")}</span
+                                                            >
+                                                        </div>
+                                                    {:else}
+                                                        <div
+                                                            class="user-slot-row"
+                                                        >
+                                                            <span
+                                                                class="team-identity"
+                                                            >
+                                                                {#if teamLogoFor(dbM?.p1)}
+                                                                    <img
+                                                                        src={teamLogoFor(
+                                                                            dbM?.p1,
+                                                                        )}
+                                                                        alt=""
+                                                                        class="team-logo-inline"
+                                                                    />
+                                                                {/if}
+                                                                {match.p1}
+                                                            </span>
+                                                            <span
+                                                                class="match-score-badge"
+                                                                >{dbM?.isLive
+                                                                    ? "?"
+                                                                    : (dbM?.p1Score ??
+                                                                      "-")}</span
+                                                            >
+                                                        </div>
+                                                    {/if}
+                                                </div>
+
+                                                <div
+                                                    class="competitor-slot {match.p2 ===
+                                                    'BYE'
+                                                        ? 'bye-slot'
+                                                        : ''} {dbM?.winner &&
+                                                    dbM.winner === dbM.p2
+                                                        ? 'winner-highlight'
+                                                        : ''}"
+                                                    data-slot="p2"
+                                                >
+                                                    {#if isAdmin}
+                                                        <div
+                                                            class="slot-flex-row"
+                                                            onclick={(e) =>
+                                                                e.stopPropagation()}
+                                                        >
+                                                            <select
+                                                                value={dbM?.p2 ||
+                                                                    ""}
+                                                                onchange={(e) =>
+                                                                    handleUpdateMatchSlot(
+                                                                        match.id,
+                                                                        "p2",
+                                                                        e
+                                                                            .currentTarget
+                                                                            .value,
+                                                                    )}
+                                                                class="slot-embed-select"
+                                                            >
+                                                                <option value=""
+                                                                    >Default: {match.p2}</option
+                                                                >
+                                                                <option
+                                                                    value="BYE"
+                                                                    >BYE</option
+                                                                >
+                                                                {#each dbTeams as team}
+                                                                    <option
+                                                                        value={team.id}
+                                                                        >{team.name}</option
+                                                                    >
+                                                                {/each}
+                                                            </select>
+                                                            <span
+                                                                class="match-score-badge"
+                                                                >{dbM?.isLive
+                                                                    ? "?"
+                                                                    : (dbM?.p2Score ??
+                                                                      "-")}</span
+                                                            >
+                                                        </div>
+                                                    {:else}
+                                                        <div
+                                                            class="user-slot-row"
+                                                        >
+                                                            <span
+                                                                class="team-identity"
+                                                            >
+                                                                {#if teamLogoFor(dbM?.p2)}
+                                                                    <img
+                                                                        src={teamLogoFor(
+                                                                            dbM?.p2,
+                                                                        )}
+                                                                        alt=""
+                                                                        class="team-logo-inline"
+                                                                    />
+                                                                {/if}
+                                                                {match.p2}
+                                                            </span>
+                                                            <span
+                                                                class="match-score-badge"
+                                                                >{dbM?.isLive
+                                                                    ? "?"
+                                                                    : (dbM?.p2Score ??
+                                                                      "-")}</span
+                                                            >
+                                                        </div>
+                                                    {/if}
+                                                </div>
+                                            </div>
+                                        {/if}
                                     {/each}
                                 </div>
                             </div>
