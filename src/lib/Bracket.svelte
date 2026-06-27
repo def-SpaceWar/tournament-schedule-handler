@@ -102,6 +102,7 @@
     let detailsP1ScoreInput = $state("");
     let detailsP2ScoreInput = $state("");
     let detailsStartTimeInput = $state("");
+    let detailsWinnerInput = $state<string>("");
 
     // Stadium management state
     let dbStadiums = $state<Stadium[]>([]);
@@ -814,6 +815,7 @@
         detailsStadiumInput = dbM?.stadium || "";
         detailsStadiumIdInput = dbM?.stadiumId || "";
         detailsIsLiveInput = !!dbM?.isLive;
+        detailsWinnerInput = dbM?.winner || "";
         detailsP1ScoreInput =
             dbM?.p1Score !== undefined && dbM?.p1Score !== null
                 ? String(dbM.p1Score)
@@ -838,6 +840,8 @@
 
     async function handleSaveMatchDetails() {
         if (!isAdmin || !bracketId || !sport || !activeDetailsMatchId) return;
+        const matchId = activeDetailsMatchId;
+        const currentMatch = dbMatches[matchId];
         const matchRef = doc(
             firestore,
             "sports",
@@ -845,11 +849,16 @@
             "groups",
             bracketId,
             "bracket",
-            activeDetailsMatchId,
+            matchId,
         );
         const selectedStadium = dbStadiums.find(
             (s) => s.id === detailsStadiumIdInput,
         );
+
+        const newWinner = detailsWinnerInput || null;
+        const oldWinner = currentMatch?.winner || null;
+
+        // Persist core match fields
         await updateDoc(matchRef, {
             stadiumId: detailsStadiumIdInput || null,
             stadium:
@@ -858,6 +867,7 @@
             startTime: detailsStartTimeInput
                 ? new Date(detailsStartTimeInput).toISOString()
                 : null,
+            winner: newWinner,
             p1Score:
                 detailsP1ScoreInput.trim() !== "" &&
                 !isNaN(Number(detailsP1ScoreInput))
@@ -869,6 +879,86 @@
                     ? Number(detailsP2ScoreInput)
                     : null,
         });
+
+        // Propagate winner change to next/loser match slots
+        if (newWinner !== oldWinner && currentMatch) {
+            const loserTeamId =
+                newWinner === currentMatch.p1
+                    ? currentMatch.p2
+                    : currentMatch.p1;
+
+            // Clear slots set by old winner propagation
+            if (
+                oldWinner &&
+                currentMatch.nextMatchId &&
+                currentMatch.nextSlot
+            ) {
+                const nextRef = doc(
+                    firestore,
+                    "sports",
+                    sport,
+                    "groups",
+                    bracketId,
+                    "bracket",
+                    currentMatch.nextMatchId,
+                );
+                await updateDoc(nextRef, { [currentMatch.nextSlot]: null });
+            }
+            if (
+                oldWinner &&
+                currentMatch.loserMatchId &&
+                currentMatch.loserSlot
+            ) {
+                const loserRef = doc(
+                    firestore,
+                    "sports",
+                    sport,
+                    "groups",
+                    bracketId,
+                    "bracket",
+                    currentMatch.loserMatchId,
+                );
+                await updateDoc(loserRef, { [currentMatch.loserSlot]: null });
+            }
+
+            // Set new propagation
+            if (newWinner) {
+                if (currentMatch.nextMatchId && currentMatch.nextSlot) {
+                    const nextRef = doc(
+                        firestore,
+                        "sports",
+                        sport,
+                        "groups",
+                        bracketId,
+                        "bracket",
+                        currentMatch.nextMatchId,
+                    );
+                    await updateDoc(nextRef, {
+                        [currentMatch.nextSlot]: newWinner,
+                    });
+                }
+                if (
+                    currentMatch.loserMatchId &&
+                    currentMatch.loserSlot &&
+                    loserTeamId &&
+                    loserTeamId !== "BYE"
+                ) {
+                    const loserRef = doc(
+                        firestore,
+                        "sports",
+                        sport,
+                        "groups",
+                        bracketId,
+                        "bracket",
+                        currentMatch.loserMatchId,
+                    );
+                    await updateDoc(loserRef, {
+                        [currentMatch.loserSlot]: loserTeamId,
+                    });
+                }
+            }
+        }
+
         activeDetailsMatchId = null;
     }
 
@@ -1123,17 +1213,40 @@
     $effect(() => {
         const _trigger = bracketData,
             _colorTrigger = useColorLines,
-            timer = setTimeout(recalculateVectors, 100);
+            _matchesTrigger = dbMatches,
+            _isAdminTrigger = isAdmin;
+
+        // Run immediately after next paint so DOM is settled
+        let raf = requestAnimationFrame(() => {
+            recalculateVectors();
+            // Second pass to catch any remaining layout shifts
+            raf = requestAnimationFrame(recalculateVectors);
+        });
+
+        let resizeObserver: ResizeObserver | null = null;
+        let mutationObserver: MutationObserver | null = null;
 
         if (containerEl) {
-            const observer = new ResizeObserver(() => recalculateVectors());
-            observer.observe(containerEl);
-            return () => {
-                clearTimeout(timer);
-                observer.disconnect();
-            };
+            resizeObserver = new ResizeObserver(() => recalculateVectors());
+            resizeObserver.observe(containerEl);
+
+            // Watch for any DOM changes inside the bracket (e.g. admin selects expanding)
+            mutationObserver = new MutationObserver(() => {
+                requestAnimationFrame(recalculateVectors);
+            });
+            mutationObserver.observe(containerEl, {
+                subtree: true,
+                childList: true,
+                attributes: true,
+                attributeFilter: ["style", "class"],
+            });
         }
-        return () => clearTimeout(timer);
+
+        return () => {
+            cancelAnimationFrame(raf);
+            resizeObserver?.disconnect();
+            mutationObserver?.disconnect();
+        };
     });
 </script>
 
@@ -1429,7 +1542,9 @@
                                 {#each round as match}
                                     {@const dbM = dbMatches[match.id]}
                                     <div
-                                        class="match-node-card"
+                                        class="match-node-card {dbM?.isLive
+                                            ? 'match-card-live'
+                                            : ''}"
                                         style="position: absolute; top: {yPositions[
                                             match.id
                                         ] || 0}px;"
@@ -1516,22 +1631,6 @@
                                                             : (dbM?.p1Score ??
                                                               "-")}</span
                                                     >
-                                                    {#if dbM?.p1 && dbM.p1 !== "BYE"}
-                                                        <button
-                                                            type="button"
-                                                            class="action-winner-tick"
-                                                            onclick={() =>
-                                                                handleDeclareWinner(
-                                                                    match.id,
-                                                                    dbM.p1,
-                                                                )}
-                                                        >
-                                                            {dbM?.winner ===
-                                                            dbM.p1
-                                                                ? "👑"
-                                                                : "✓"}
-                                                        </button>
-                                                    {/if}
                                                 </div>
                                             {:else}
                                                 <div class="user-slot-row">
@@ -1605,22 +1704,6 @@
                                                             : (dbM?.p2Score ??
                                                               "-")}</span
                                                     >
-                                                    {#if dbM?.p2 && dbM.p2 !== "BYE"}
-                                                        <button
-                                                            type="button"
-                                                            class="action-winner-tick"
-                                                            onclick={() =>
-                                                                handleDeclareWinner(
-                                                                    match.id,
-                                                                    dbM.p2,
-                                                                )}
-                                                        >
-                                                            {dbM?.winner ===
-                                                            dbM.p2
-                                                                ? "👑"
-                                                                : "✓"}
-                                                        </button>
-                                                    {/if}
                                                 </div>
                                             {:else}
                                                 <div class="user-slot-row">
@@ -1670,7 +1753,9 @@
                                     {#each round as match}
                                         {@const dbM = dbMatches[match.id]}
                                         <div
-                                            class="match-node-card lb-variant"
+                                            class="match-node-card lb-variant {dbM?.isLive
+                                                ? 'match-card-live'
+                                                : ''}"
                                             style="position: absolute; top: {yPositions[
                                                 match.id
                                             ] || 0}px;"
@@ -1760,22 +1845,6 @@
                                                                 : (dbM?.p1Score ??
                                                                   "-")}</span
                                                         >
-                                                        {#if dbM?.p1 && dbM.p1 !== "BYE"}
-                                                            <button
-                                                                type="button"
-                                                                class="action-winner-tick"
-                                                                onclick={() =>
-                                                                    handleDeclareWinner(
-                                                                        match.id,
-                                                                        dbM.p1,
-                                                                    )}
-                                                            >
-                                                                {dbM?.winner ===
-                                                                dbM.p1
-                                                                    ? "👑"
-                                                                    : "✓"}
-                                                            </button>
-                                                        {/if}
                                                     </div>
                                                 {:else}
                                                     <div class="user-slot-row">
@@ -1853,22 +1922,6 @@
                                                                 : (dbM?.p2Score ??
                                                                   "-")}</span
                                                         >
-                                                        {#if dbM?.p2 && dbM.p2 !== "BYE"}
-                                                            <button
-                                                                type="button"
-                                                                class="action-winner-tick"
-                                                                onclick={() =>
-                                                                    handleDeclareWinner(
-                                                                        match.id,
-                                                                        dbM.p2,
-                                                                    )}
-                                                            >
-                                                                {dbM?.winner ===
-                                                                dbM.p2
-                                                                    ? "👑"
-                                                                    : "✓"}
-                                                            </button>
-                                                        {/if}
                                                     </div>
                                                 {:else}
                                                     <div class="user-slot-row">
@@ -1910,7 +1963,7 @@
             {@const dbChamp = dbMatches["CHAMPIONSHIP"]}
             <div
                 class="championship-showcase-dock"
-                style="position: absolute; right: 4rem; top: {championshipTop}px;"
+                style="position: absolute; right: 4rem; top: {championshipTop}px; width: 220px;"
             >
                 <div
                     class="round-label default-championship-text {useColorLines
@@ -1922,7 +1975,7 @@
                 <div
                     class="match-node-card default-championship-box {useColorLines
                         ? 'chromatic-active-box'
-                        : ''}"
+                        : ''} {dbChamp?.isLive ? 'match-card-live' : ''}"
                     data-match-id="CHAMPIONSHIP"
                     onclick={() => openMatchDetails("CHAMPIONSHIP")}
                     role="button"
@@ -1990,21 +2043,6 @@
                                         ? "?"
                                         : (dbChamp?.p1Score ?? "-")}</span
                                 >
-                                {#if dbChamp?.p1}
-                                    <button
-                                        type="button"
-                                        class="action-winner-tick"
-                                        onclick={() =>
-                                            handleDeclareWinner(
-                                                "CHAMPIONSHIP",
-                                                dbChamp.p1,
-                                            )}
-                                    >
-                                        {dbChamp?.winner === dbChamp.p1
-                                            ? "👑"
-                                            : "✓"}
-                                    </button>
-                                {/if}
                             </div>
                         {:else}
                             <div class="user-slot-row">
@@ -2068,21 +2106,6 @@
                                         ? "?"
                                         : (dbChamp?.p2Score ?? "-")}</span
                                 >
-                                {#if dbChamp?.p2}
-                                    <button
-                                        type="button"
-                                        class="action-winner-tick"
-                                        onclick={() =>
-                                            handleDeclareWinner(
-                                                "CHAMPIONSHIP",
-                                                dbChamp.p2,
-                                            )}
-                                    >
-                                        {dbChamp?.winner === dbChamp.p2
-                                            ? "👑"
-                                            : "✓"}
-                                    </button>
-                                {/if}
                             </div>
                         {:else}
                             <div class="user-slot-row">
@@ -2184,7 +2207,38 @@
             {/if}
 
             {#if isAdmin}
+                {@const activeMatch = dbMatches[activeDetailsMatchId!]}
                 <div class="match-modal-body">
+                    <div class="admin-control-group">
+                        <span
+                            style="font-size: 0.75rem; font-weight: 700; text-transform: uppercase; color: #64748b; letter-spacing: 0.05em;"
+                            >Winner</span
+                        >
+                        <select
+                            class="admin-input winner-select"
+                            bind:value={detailsWinnerInput}
+                            style="margin-top: 0.25rem;"
+                        >
+                            <option value="">— No winner yet —</option>
+                            {#if activeMatch?.p1 && activeMatch.p1 !== "BYE"}
+                                {@const t1 = dbTeams.find(
+                                    (t) => t.id === activeMatch.p1,
+                                )}
+                                <option value={activeMatch.p1}
+                                    >{t1?.name || activeMatch.p1} 👑</option
+                                >
+                            {/if}
+                            {#if activeMatch?.p2 && activeMatch.p2 !== "BYE"}
+                                {@const t2 = dbTeams.find(
+                                    (t) => t.id === activeMatch.p2,
+                                )}
+                                <option value={activeMatch.p2}
+                                    >{t2?.name || activeMatch.p2} 👑</option
+                                >
+                            {/if}
+                        </select>
+                    </div>
+
                     <div class="admin-control-group">
                         <span
                             style="font-size: 0.75rem; font-weight: 700; text-transform: uppercase; color: #64748b; letter-spacing: 0.05em;"
@@ -2467,7 +2521,7 @@
         position: relative;
         display: flex;
         flex-direction: row;
-        padding-top: 4rem;
+        padding-top: 5rem;
         padding-bottom: 4rem;
         padding-left: 6rem;
         width: max-content;
@@ -2516,6 +2570,7 @@
         position: relative;
         width: 100%;
         height: 100%;
+        overflow: visible;
     }
     .match-node-card {
         background: #ffffff;
@@ -2526,9 +2581,22 @@
         z-index: 2;
         cursor: pointer;
         transition: box-shadow 0.15s ease;
+        position: relative;
+        overflow: visible;
     }
-    .match-node-card:hover {
-        box-shadow: 0 4px 10px rgba(0, 0, 0, 0.12);
+    .match-node-card.match-card-live {
+        border-left: 3px solid #dc2626;
+    }
+    .championship-showcase-dock {
+        width: 220px;
+    }
+    .championship-showcase-dock .match-node-card {
+        width: 100%;
+        box-sizing: border-box;
+    }
+    .winner-select {
+        width: 100%;
+        font-weight: 600;
     }
     .lb-variant {
         border-color: #475569;
@@ -2590,18 +2658,25 @@
         font-weight: 600;
     }
 
-    /* --- Stadium / Live status badge on match cards --- */
+    /* --- Live / Stadium / Time status strip — floats above the match card --- */
     .match-status-strip {
         position: absolute;
-        top: 50%;
-        left: 50%;
-        transform: translate(-50%, -50%);
+        bottom: 100%;
+        left: -1px;
+        right: -1px;
+        display: flex;
         align-items: center;
-        gap: 0.4rem;
-        padding: 0.3rem 0.5rem;
-        border-bottom: 1px solid #e2e8f0;
-        background: #f8fafc;
-        flex-wrap: wrap;
+        gap: 0.35rem;
+        padding: 0.18rem 0.5rem;
+        background: #fff8f8;
+        border: 1px solid #fca5a5;
+        border-bottom: none;
+        border-radius: 4px 4px 0 0;
+        flex-wrap: nowrap;
+        white-space: nowrap;
+        overflow: hidden;
+        pointer-events: none;
+        z-index: 3;
     }
     .live-pill {
         font-size: 0.65rem;
@@ -2908,10 +2983,68 @@
     .admin-toggle-switch input:checked + .admin-toggle-slider::before {
         transform: translateX(16px);
     }
-    .admin-toggle-caption {
-        font-size: 0.85rem;
-        font-weight: 500;
-        color: #1e293b;
-        white-space: nowrap;
+    /* --- Responsive: tablet & mobile --- */
+    @media (max-width: 900px) {
+        .admin-dashboard-panel {
+            flex-direction: column;
+            gap: 1.2rem;
+        }
+        .input-stack {
+            min-width: 0;
+            width: 100%;
+        }
+        .tree-column {
+            width: 180px;
+        }
+        .columns-row {
+            gap: 5rem;
+        }
+    }
+
+    @media (max-width: 640px) {
+        .admin-dashboard-panel {
+            padding: 1rem;
+            gap: 1rem;
+        }
+        .admin-select,
+        .admin-input {
+            min-width: 0;
+            width: 100%;
+        }
+        .team-roster-grid {
+            grid-template-columns: 1fr;
+        }
+        .tree-column {
+            width: 155px;
+        }
+        .columns-row {
+            gap: 3rem;
+        }
+        .match-modal-card {
+            max-width: 100%;
+            border-radius: 8px;
+        }
+        .match-modal-teams {
+            gap: 0.4rem;
+        }
+        .modal-team-name {
+            max-width: 72px;
+            font-size: 0.82rem;
+        }
+        .modal-team-logo,
+        .modal-team-logo-placeholder {
+            width: 22px;
+            height: 22px;
+        }
+        .match-modal-body {
+            padding: 0.9rem 1rem;
+        }
+        .match-modal-footer {
+            padding: 0 1rem 1rem;
+        }
+        .championship-showcase-dock {
+            right: 1rem !important;
+            width: 155px !important;
+        }
     }
 </style>

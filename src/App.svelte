@@ -634,6 +634,9 @@
     }
 
     @media (max-width: 768px) {
+        .top-nav {
+            padding: 0.75rem 1rem;
+        }
         .dashboard-layout {
             height: auto;
             overflow: auto;
@@ -641,6 +644,7 @@
         .content-area {
             overflow: visible;
             height: auto;
+            padding: 0.75rem;
         }
         .bracket-transition-layer {
             overflow: auto;
@@ -649,23 +653,50 @@
         .nav-container {
             flex-direction: column;
             align-items: flex-start;
-            gap: 1rem;
+            gap: 0.75rem;
         }
-        .nav-section,
+        .nav-section {
+            width: 100%;
+            flex-wrap: wrap;
+        }
         .nav-admin-section {
             width: 100%;
-            display: flex;
-            flex-direction: column;
-            align-items: flex-start;
-            gap: 0.5rem;
-        }
-        .nav-admin-section {
             margin-left: 0;
             padding-top: 0.5rem;
             border-top: 1px solid #f1f5f9;
+            flex-direction: row;
+            flex-wrap: wrap;
+            gap: 0.5rem;
         }
         .btn-group {
+            flex: 1;
+        }
+        .action-btn {
+            flex: 1;
+            text-align: center;
+        }
+        .admin-status-badge {
             width: 100%;
+        }
+    }
+
+    @media (max-width: 480px) {
+        .nav-btn {
+            padding: 0.4rem 0.6rem;
+            font-size: 0.82rem;
+        }
+        .modal-surface {
+            border-radius: 10px;
+        }
+        .modal-form {
+            padding: 1rem;
+        }
+        .form-actions {
+            flex-direction: column-reverse;
+        }
+        .form-btn {
+            width: 100%;
+            text-align: center;
         }
     }
 </style>
