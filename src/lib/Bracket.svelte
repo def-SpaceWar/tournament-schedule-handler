@@ -193,14 +193,7 @@
 
         // 4. Sync stadiums subcollection
         const unsubStadiums = onSnapshot(
-            collection(
-                firestore,
-                "sports",
-                sport,
-                "groups",
-                bracketId,
-                "stadiums",
-            ),
+            collection(firestore, "sports", sport, "stadiums"),
             (snap) => {
                 dbStadiums = snap.docs.map((d) => ({
                     id: d.id,
@@ -965,20 +958,10 @@
     // --- Stadium CRUD ---
     async function handleAddStadium() {
         if (!newStadiumName.trim() || !bracketId || !sport) return;
-        await addDoc(
-            collection(
-                firestore,
-                "sports",
-                sport,
-                "groups",
-                bracketId,
-                "stadiums",
-            ),
-            {
-                name: newStadiumName.trim(),
-                livestreamUrl: newStadiumUrl.trim() || null,
-            },
-        );
+        await addDoc(collection(firestore, "sports", sport, "stadiums"), {
+            name: newStadiumName.trim(),
+            livestreamUrl: newStadiumUrl.trim() || null,
+        });
         newStadiumName = "";
         newStadiumUrl = "";
     }
@@ -992,15 +975,7 @@
     async function handleSaveStadiumEdits() {
         if (!editingStadiumId || !bracketId || !sport) return;
         await updateDoc(
-            doc(
-                firestore,
-                "sports",
-                sport,
-                "groups",
-                bracketId,
-                "stadiums",
-                editingStadiumId,
-            ),
+            doc(firestore, "sports", sport, "stadiums", editingStadiumId),
             {
                 name: editStadiumName.trim() || "Unnamed",
                 livestreamUrl: editStadiumUrl.trim() || null,
@@ -1022,15 +997,7 @@
         const batch = writeBatch(firestore);
 
         // 2. Add the stadium deletion to the batch
-        const stadiumRef = doc(
-            firestore,
-            "sports",
-            sport,
-            "groups",
-            bracketId,
-            "stadiums",
-            id,
-        );
+        const stadiumRef = doc(firestore, "sports", sport, "stadiums", id);
         batch.delete(stadiumRef);
 
         // 3. Find all matches currently using this stadium and clear their stadium fields
@@ -1087,86 +1054,6 @@
         if (!match?.stadiumId) return null;
         const stadium = dbStadiums.find((s) => s.id === match.stadiumId);
         return stadium?.livestreamUrl || null;
-    }
-
-    async function handleAutoCreateBracket() {
-        if (!isAdmin || !bracketId || !sport) return;
-
-        const batch = writeBatch(firestore);
-        const allMatches = [...bracketData.wb.flat(), ...bracketData.lb.flat()];
-
-        if (doubleElimEnabled) {
-            allMatches.push({ id: "CHAMPIONSHIP", p1: "", p2: "" });
-        }
-
-        let teamIdx = 0;
-
-        for (const match of allMatches) {
-            const matchRef = doc(
-                firestore,
-                "sports",
-                sport,
-                "groups",
-                bracketId,
-                "bracket",
-                match.id,
-            );
-            const winnerRoute = bracketData.connections.find(
-                (c) => c.fromId === match.id && c.type === "winner",
-            );
-            const loserRoute = bracketData.connections.find(
-                (c) => c.fromId === match.id && c.type === "loser",
-            );
-
-            const existingMatch = dbMatches[match.id];
-
-            const routingFields = {
-                nextMatchId: winnerRoute ? winnerRoute.toId : null,
-                nextSlot: winnerRoute ? winnerRoute.toSlot : null,
-                loserMatchId: loserRoute ? loserRoute.toId : null,
-                loserSlot: loserRoute ? loserRoute.toSlot : null,
-            };
-
-            if (existingMatch) {
-                batch.set(matchRef, routingFields, { merge: true });
-                continue;
-            }
-
-            let initialP1 = null;
-            let initialP2 = null;
-
-            if (match.id.startsWith("WB-R1")) {
-                initialP1 = dbTeams[teamIdx]?.id || null;
-                const nextPower = Math.pow(2, Math.ceil(Math.log2(teamCount)));
-                const numDuoMatches = teamCount - nextPower / 2;
-                const currentMatchIndex = parseInt(match.id.split("-M")[1]) - 1;
-
-                if (currentMatchIndex < numDuoMatches) {
-                    initialP2 = dbTeams[teamIdx + 1]?.id || null;
-                    teamIdx += 2;
-                } else {
-                    initialP2 = "BYE";
-                    teamIdx += 1;
-                }
-            }
-
-            batch.set(
-                matchRef,
-                {
-                    id: match.id,
-                    p1: initialP1,
-                    p2: initialP2,
-                    winner: null,
-                    p1Score: null,
-                    p2Score: null,
-                    ...routingFields,
-                },
-                { merge: true },
-            );
-        }
-
-        await batch.commit();
-        alert("Success! Bracket generated and populated automatically.");
     }
 
     function recalculateVectors() {
