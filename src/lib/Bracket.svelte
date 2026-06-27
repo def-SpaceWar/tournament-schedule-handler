@@ -124,7 +124,7 @@
         championshipTop = $state<number>(0);
 
     const NODE_HEIGHT = 80,
-        MIN_VERTICAL_GAP = 64,
+        MIN_VERTICAL_GAP = 48,
         TOTAL_NODE_SPACING = NODE_HEIGHT + MIN_VERTICAL_GAP;
 
     // --- Real-Time Synchronizer Effect ---
@@ -1074,7 +1074,9 @@
         if (!newStadiumName.trim() || !bracketId || !sport) return;
         await addDoc(collection(firestore, "sports", sport, "stadiums"), {
             name: newStadiumName.trim(),
-            livestreamUrl: newStadiumUrl.trim() || null,
+            livestreamUrl: newStadiumUrl.trim()
+                ? toEmbeddableUrl(newStadiumUrl)
+                : null,
         });
         newStadiumName = "";
         newStadiumUrl = "";
@@ -1092,7 +1094,9 @@
             doc(firestore, "sports", sport, "stadiums", editingStadiumId),
             {
                 name: editStadiumName.trim() || "Unnamed",
-                livestreamUrl: editStadiumUrl.trim() || null,
+                livestreamUrl: editStadiumUrl.trim()
+                    ? toEmbeddableUrl(editStadiumUrl)
+                    : null,
             },
         );
         editingStadiumId = null;
@@ -1162,12 +1166,93 @@
         });
     }
 
+    // Converts a normal YouTube watch/share/live/shorts URL into its
+    // embeddable /embed/VIDEO_ID form. The <iframe> we render the stream in
+    // only works with embed URLs - a plain youtube.com/watch?v=... link gets
+    // blocked by YouTube's frame-ancestors policy and shows a blank player.
+    // Non-YouTube URLs (Twitch, custom embeds, etc.) are passed through
+    // unchanged, and URLs that are already in /embed/ form are left alone.
+    function toEmbeddableUrl(rawUrl: string): string {
+        const url = rawUrl.trim();
+        if (!url) return url;
+
+        let host = "";
+        try {
+            host = new URL(url).hostname.replace(/^www\./, "");
+        } catch {
+            // Not a parseable absolute URL - return as-is rather than guessing.
+            return url;
+        }
+
+        const isYouTube =
+            host === "youtube.com" ||
+            host === "youtu.be" ||
+            host === "m.youtube.com" ||
+            host === "youtube-nocookie.com";
+        if (!isYouTube) return url;
+
+        // Already an embed URL - leave it untouched.
+        if (/\/embed\//.test(url)) return url;
+
+        let videoId = "";
+        let startSeconds = "";
+
+        try {
+            const parsed = new URL(url);
+            const tParam =
+                parsed.searchParams.get("t") ||
+                parsed.searchParams.get("start");
+            if (tParam) {
+                // "t" can be plain seconds ("90") or YouTube's "1h2m3s" style.
+                const match = tParam.match(/^(\d+)$/);
+                if (match) {
+                    startSeconds = match[1];
+                } else {
+                    const hms = tParam.match(
+                        /^(?:(\d+)h)?(?:(\d+)m)?(?:(\d+)s)?$/,
+                    );
+                    if (hms && (hms[1] || hms[2] || hms[3])) {
+                        const hours = Number(hms[1] || 0);
+                        const mins = Number(hms[2] || 0);
+                        const secs = Number(hms[3] || 0);
+                        startSeconds = String(hours * 3600 + mins * 60 + secs);
+                    }
+                }
+            }
+
+            if (host === "youtu.be") {
+                // youtu.be/VIDEO_ID
+                videoId = parsed.pathname.replace(/^\//, "").split("/")[0];
+            } else if (parsed.pathname.startsWith("/watch")) {
+                // youtube.com/watch?v=VIDEO_ID
+                videoId = parsed.searchParams.get("v") || "";
+            } else if (parsed.pathname.startsWith("/live/")) {
+                // youtube.com/live/VIDEO_ID
+                videoId = parsed.pathname.split("/")[2] || "";
+            } else if (parsed.pathname.startsWith("/shorts/")) {
+                // youtube.com/shorts/VIDEO_ID
+                videoId = parsed.pathname.split("/")[2] || "";
+            }
+        } catch {
+            return url;
+        }
+
+        if (!videoId) return url;
+
+        const embedUrl = `https://www.youtube.com/embed/${videoId}`;
+        return startSeconds ? `${embedUrl}?start=${startSeconds}` : embedUrl;
+    }
+
     function getLivestreamForMatch(
         match: FirestoreMatch | undefined,
     ): string | null {
         if (!match?.stadiumId) return null;
         const stadium = dbStadiums.find((s) => s.id === match.stadiumId);
-        return stadium?.livestreamUrl || null;
+        if (!stadium?.livestreamUrl) return null;
+        // Defensive normalization at read time too, so stadiums that already
+        // have a raw (non-embed) YouTube URL saved from before this fix work
+        // immediately without needing every stadium to be manually re-edited.
+        return toEmbeddableUrl(stadium.livestreamUrl);
     }
 
     function recalculateVectors() {
@@ -1454,7 +1539,7 @@
                                     type="url"
                                     class="admin-input"
                                     bind:value={editStadiumUrl}
-                                    placeholder="Livestream URL (YouTube embed, etc.)"
+                                    placeholder="YouTube or stream URL (auto-converted)"
                                 />
                                 <div class="input-inline-row">
                                     <button
@@ -1527,7 +1612,7 @@
                             type="url"
                             class="admin-input"
                             bind:value={newStadiumUrl}
-                            placeholder="Livestream embed URL (optional)"
+                            placeholder="YouTube or stream URL, optional (auto-converted)"
                         />
                         <button
                             type="button"
