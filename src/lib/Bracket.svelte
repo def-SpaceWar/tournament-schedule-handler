@@ -121,8 +121,8 @@
         svgPaths = $state<{ d: string; color: string }[]>([]),
         championshipTop = $state<number>(0);
 
-    const NODE_HEIGHT = 68,
-        MIN_VERTICAL_GAP = 28,
+    const NODE_HEIGHT = 80,
+        MIN_VERTICAL_GAP = 48,
         TOTAL_NODE_SPACING = NODE_HEIGHT + MIN_VERTICAL_GAP;
 
     // --- Real-Time Synchronizer Effect ---
@@ -2549,7 +2549,7 @@
         position: relative;
         display: flex;
         flex-direction: row;
-        gap: 9rem;
+        gap: 12rem;
     }
     .tree-column {
         position: relative;
@@ -2563,7 +2563,7 @@
         text-transform: uppercase;
         color: #94a3b8;
         letter-spacing: 0.06em;
-        margin-bottom: 1rem;
+        margin-bottom: 3rem;
         text-align: center;
     }
     .vertical-nodes-box {
