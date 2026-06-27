@@ -1,11 +1,19 @@
 <script lang="ts">
-    import { fly } from "svelte/transition";
+    import { fly, fade, scale } from "svelte/transition";
     import Bracket, {
         type AgeGroup,
         type Sex,
         type Sport,
     } from "./lib/Bracket.svelte";
-    import { app } from "./lib/firebase";
+    import { firestore, auth } from "./lib/firebase"; // Imported auth
+    import { collection, onSnapshot } from "firebase/firestore";
+    // Imported Firebase Auth methods and types
+    import {
+        signInWithEmailAndPassword,
+        signOut,
+        onAuthStateChanged,
+        type User,
+    } from "firebase/auth";
 
     interface TournamentOption {
         id: string;
@@ -13,84 +21,104 @@
         ageGroup: AgeGroup;
         sex: Sex;
         doubleElim?: boolean;
+        totalTeams: number;
     }
 
-    const tournamentConfig: Record<Sport, TournamentOption[]> = {
-        soccer: [
-            {
-                id: "m_under10",
-                label: "U10 Kids",
-                ageGroup: "under10",
-                sex: "male",
-            },
-            {
-                id: "m_under14",
-                label: "U14 Kids",
-                ageGroup: "under14",
-                sex: "male",
-            },
-            {
-                id: "m_under18",
-                label: "U18 Boys",
-                ageGroup: "under18",
-                sex: "male",
-            },
-            {
-                id: "m_open",
-                label: "Mens Local",
-                ageGroup: "open",
-                sex: "male",
-            },
-            {
-                id: "m_international",
-                label: "Mens International",
-                ageGroup: "open",
-                sex: "male",
-                doubleElim: true,
-            },
-        ],
-        volleyball: [
-            {
-                id: "f_under18",
-                label: "U18 Girls",
-                ageGroup: "under18",
-                sex: "female",
-            },
-            {
-                id: "f_open",
-                label: "Womens Open",
-                ageGroup: "open",
-                sex: "female",
-            },
-            {
-                id: "m_under18",
-                label: "U18 Boys",
-                ageGroup: "under18",
-                sex: "male",
-            },
-            { id: "m_open", label: "Mens Open", ageGroup: "open", sex: "male" },
-        ],
-        basketball: [
-            { id: "m_open", label: "Mens Open", ageGroup: "open", sex: "male" },
-        ],
-    };
+    const sports: Sport[] = ["soccer", "volleyball", "basketball"];
 
-    const sports = Object.keys(tournamentConfig) as Sport[];
-
+    // --- App Reactive States ---
     let currentSport = $state<Sport>("soccer"),
-        availableGroups = $derived(tournamentConfig[currentSport]),
+        availableGroups = $state<TournamentOption[]>([]),
         selectedOptionIndex = $state<number>(0),
-        currentOption = $derived(
-            availableGroups[selectedOptionIndex] || availableGroups[0],
+        useColorLines = $state(false);
+
+    // --- Admin Auth States ---
+    let currentUser = $state<User | null>(null);
+    let showLoginModal = $state(false);
+    let email = $state("");
+    let password = $state("");
+    let authError = $state("");
+
+    let currentOption = $derived(
+        availableGroups[selectedOptionIndex] || availableGroups[0],
+    );
+
+    // --- Auth Observer Effect ---
+    $effect(() => {
+        const unsubscribe = onAuthStateChanged(auth, (user) => {
+            currentUser = user;
+        });
+        return unsubscribe; // Auto-cleanup when component destroys
+    });
+
+    // --- Live-Synced Groups Effect ---
+    // Uses onSnapshot rather than a one-time getDocs so that admin edits made
+    // from within the Bracket admin panel (team_count, double_elimination, etc.)
+    // are reflected here immediately - e.g. the "Chromatic Routes" toggle below
+    // depends on currentOption.doubleElim staying in sync with Firestore.
+    $effect(() => {
+        const groupsRef = collection(
+            firestore,
+            "sports",
+            currentSport,
+            "groups",
         );
 
-    let useColorLines = $state(false);
+        const unsubscribe = onSnapshot(
+            groupsRef,
+            (snapshot) => {
+                availableGroups = snapshot.docs.map((doc) => {
+                    const data = doc.data();
+                    return {
+                        id: doc.id,
+                        label: data.label || "Unnamed Group",
+                        ageGroup: data.ageGroup as AgeGroup,
+                        sex: data.sex as Sex,
+                        doubleElim: data.double_elimination || false,
+                        // team_count is sometimes stored as a string in Firestore (e.g. "0"),
+                        // so coerce to a real number or "0" would otherwise be treated as truthy.
+                        totalTeams: Number(data.team_count) || 0,
+                    };
+                });
+            },
+            (error) => {
+                console.error(
+                    `Failed to sync tournament config for ${currentSport}:`,
+                    error,
+                );
+                availableGroups = [];
+            },
+        );
+
+        return unsubscribe;
+    });
 
     $effect(() => {
         if (selectedOptionIndex >= availableGroups.length) {
             selectedOptionIndex = 0;
         }
     });
+
+    async function handleLogin(e: SubmitEvent) {
+        e.preventDefault();
+        authError = "";
+        try {
+            await signInWithEmailAndPassword(auth, email, password);
+            showLoginModal = false;
+            email = "";
+            password = "";
+        } catch (error: any) {
+            authError = error.message.replace("Firebase: ", "");
+        }
+    }
+
+    async function handleLogout() {
+        try {
+            await signOut(auth);
+        } catch (error) {
+            console.error("Logout failed:", error);
+        }
+    }
 </script>
 
 <div class="dashboard-layout">
@@ -140,6 +168,28 @@
                     </label>
                 </div>
             {/if}
+
+            <div class="nav-admin-section">
+                {#if currentUser}
+                    <div class="admin-status-badge">
+                        <span class="indicator-dot"></span>
+                        <span class="admin-email">{currentUser.email}</span>
+                    </div>
+                    <button
+                        class="action-btn logout-variant"
+                        onclick={handleLogout}
+                    >
+                        Log Out
+                    </button>
+                {:else}
+                    <button
+                        class="action-btn login-variant"
+                        onclick={() => (showLoginModal = true)}
+                    >
+                        Admin Portal
+                    </button>
+                {/if}
+            </div>
         </div>
     </nav>
 
@@ -152,14 +202,14 @@
                     out:fly={{ x: -160, duration: 200 }}
                 >
                     <Bracket
-                        divisionLabel={currentOption.label}
+                        bracketId={currentOption?.id}
+                        divisionLabel={currentOption?.label}
+                        sex={currentOption?.sex}
+                        ageGroup={currentOption?.ageGroup}
                         sport={currentSport}
-                        ageGroup={currentOption.ageGroup}
-                        sex={currentOption.sex}
-                        isDoubleElimination={currentOption.doubleElim
-                            ? true
-                            : false}
-                        totalTeams={Math.ceil(Math.random() * 16)}
+                        totalTeams={currentOption?.totalTeams}
+                        isDoubleElimination={currentOption?.doubleElim ?? false}
+                        isAdmin={!!currentUser}
                         {useColorLines}
                     />
                 </div>
@@ -168,27 +218,95 @@
     </main>
 </div>
 
+{#if showLoginModal}
+    <div
+        class="modal-backdrop"
+        transition:fade={{ duration: 150 }}
+        onclick={() => (showLoginModal = false)}
+        role="presentation"
+    >
+        <div
+            class="modal-surface"
+            transition:scale={{ start: 0.95, duration: 150 }}
+            onclick={(e) => e.stopPropagation()}
+            role="dialog"
+            aria-modal="true"
+        >
+            <div class="modal-header">
+                <h3>Admin Authentication</h3>
+                <p>Access control challenge for terminal operations.</p>
+            </div>
+
+            <form onsubmit={handleLogin} class="modal-form">
+                {#if authError}
+                    <div class="auth-error-banner">
+                        {authError}
+                    </div>
+                {/if}
+
+                <div class="form-field">
+                    <label for="email">Admin Email Address</label>
+                    <input
+                        type="email"
+                        id="email"
+                        bind:value={email}
+                        required
+                        placeholder="admin@domain.com"
+                    />
+                </div>
+
+                <div class="form-field">
+                    <label for="password">Security Cryptographic Key</label>
+                    <input
+                        type="password"
+                        id="password"
+                        bind:value={password}
+                        required
+                        placeholder="••••••••"
+                    />
+                </div>
+
+                <div class="form-actions">
+                    <button
+                        type="button"
+                        class="form-btn secondary"
+                        onclick={() => (showLoginModal = false)}
+                    >
+                        Cancel
+                    </button>
+                    <button type="submit" class="form-btn primary">
+                        Verify Identity
+                    </button>
+                </div>
+            </form>
+        </div>
+    </div>
+{/if}
+
 <style>
     :global(body) {
         margin: 0;
-        background-color: #f7f9fa;
+        background-color: #f8fafc;
     }
 
     .dashboard-layout {
         display: flex;
         flex-direction: column;
-        min-height: 100vh;
+        height: 100vh;
+        overflow: hidden;
     }
 
     .top-nav {
+        flex-shrink: 0;
         background-color: #ffffff;
         border-bottom: 1px solid #e2e8f0;
         padding: 1rem 2rem;
         box-shadow: 0 1px 3px rgba(0, 0, 0, 0.05);
+        z-index: 10;
     }
 
     .nav-container {
-        max-width: 1200px;
+        max-width: 1400px;
         margin: 0 auto;
         display: flex;
         flex-wrap: wrap;
@@ -200,6 +318,14 @@
         display: flex;
         align-items: center;
         gap: 0.75rem;
+    }
+
+    /* Pulls admin segment out out line elements to right viewport edge */
+    .nav-admin-section {
+        margin-left: auto;
+        display: flex;
+        align-items: center;
+        gap: 1rem;
     }
 
     .nav-label {
@@ -243,6 +369,61 @@
         font-weight: 600;
     }
 
+    /* --- Specialized Admin Navigation Utilities --- */
+    .action-btn {
+        border: 1px solid transparent;
+        padding: 0.5rem 1rem;
+        font-size: 0.85rem;
+        font-weight: 600;
+        border-radius: 6px;
+        cursor: pointer;
+        transition: all 0.15s ease;
+    }
+
+    .action-btn.login-variant {
+        background-color: #0f172a;
+        color: #ffffff;
+    }
+
+    .action-btn.login-variant:hover {
+        background-color: #1e293b;
+    }
+
+    .action-btn.logout-variant {
+        background-color: transparent;
+        border-color: #e2e8f0;
+        color: #64748b;
+    }
+
+    .action-btn.logout-variant:hover {
+        background-color: #f1f5f9;
+        color: #0f172a;
+    }
+
+    .admin-status-badge {
+        display: flex;
+        align-items: center;
+        gap: 0.5rem;
+        background-color: #f0fdf4;
+        border: 1px solid #bbf7d0;
+        padding: 0.4rem 0.75rem;
+        border-radius: 6px;
+    }
+
+    .indicator-dot {
+        width: 6px;
+        height: 6px;
+        background-color: #22c55e;
+        border-radius: 50%;
+    }
+
+    .admin-email {
+        font-size: 0.8rem;
+        font-weight: 500;
+        color: #166534;
+    }
+
+    /* --- Control Toggles --- */
     .nav-toggle-switch {
         display: flex;
         align-items: center;
@@ -305,32 +486,183 @@
         }
     }
 
+    /* --- Content Frame Matrix --- */
     .content-area {
         flex-grow: 1;
-        padding: 2rem 0;
         display: grid;
         grid-template-columns: 1fr;
-        align-items: start;
-        overflow-x: hidden;
+        align-items: stretch;
+        padding: 1.5rem;
+        overflow: hidden;
+        min-height: 0;
     }
 
     .bracket-transition-layer {
         grid-area: 1 / 1 / 2 / 2;
         width: 100%;
+        height: 100%;
+        overflow: auto;
+        background: #ffffff;
+        border: 1px solid #e2e8f0;
+        border-radius: 12px;
+        box-shadow: 0 1px 3px rgba(0, 0, 0, 0.02);
+    }
+
+    /* --- Modal Structure Core Overlay --- */
+    .modal-backdrop {
+        position: fixed;
+        inset: 0;
+        background-color: rgba(15, 23, 42, 0.3);
+        backdrop-filter: blur(4px);
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        z-index: 100;
+        padding: 1rem;
+    }
+
+    .modal-surface {
+        background-color: #ffffff;
+        border: 1px solid #e2e8f0;
+        border-radius: 12px;
+        width: 100%;
+        max-width: 400px;
+        box-shadow:
+            0 20px 25px -5px rgba(0, 0, 0, 0.1),
+            0 10px 10px -5px rgba(0, 0, 0, 0.04);
+        overflow: hidden;
+    }
+
+    .modal-header {
+        padding: 1.5rem 1.5rem 1rem 1.5rem;
+        border-bottom: 1px solid #f1f5f9;
+    }
+
+    .modal-header h3 {
+        margin: 0;
+        font-size: 1.2rem;
+        font-weight: 700;
+        color: #0f172a;
+    }
+
+    .modal-header p {
+        margin: 0.25rem 0 0 0;
+        font-size: 0.85rem;
+        color: #64748b;
+    }
+
+    .modal-form {
+        padding: 1.5rem;
+        display: flex;
+        flex-direction: column;
+        gap: 1.25rem;
+    }
+
+    .auth-error-banner {
+        background-color: #fef2f2;
+        border: 1px solid #fca5a5;
+        color: #991b1b;
+        padding: 0.75rem;
+        border-radius: 6px;
+        font-size: 0.8rem;
+        font-weight: 500;
+    }
+
+    .form-field {
+        display: flex;
+        flex-direction: column;
+        gap: 0.4rem;
+    }
+
+    .form-field label {
+        font-size: 0.8rem;
+        font-weight: 600;
+        color: #475569;
+        text-transform: uppercase;
+        letter-spacing: 0.3px;
+    }
+
+    .form-field input {
+        padding: 0.6rem 0.75rem;
+        font-size: 0.95rem;
+        border: 1px solid #cbd5e1;
+        border-radius: 6px;
+        outline: none;
+        color: #0f172a;
+        transition: border-color 0.15s ease;
+    }
+
+    .form-field input:focus {
+        border-color: #0f172a;
+    }
+
+    .form-actions {
+        display: flex;
+        justify-content: flex-end;
+        gap: 0.75rem;
+        margin-top: 0.5rem;
+    }
+
+    .form-btn {
+        padding: 0.55rem 1.25rem;
+        font-size: 0.9rem;
+        font-weight: 600;
+        border-radius: 6px;
+        cursor: pointer;
+        border: 1px solid transparent;
+        transition: all 0.15s ease;
+    }
+
+    .form-btn.primary {
+        background-color: #0f172a;
+        color: #ffffff;
+    }
+
+    .form-btn.primary:hover {
+        background-color: #1e293b;
+    }
+
+    .form-btn.secondary {
+        background-color: transparent;
+        border-color: #e2e8f0;
+        color: #475569;
+    }
+
+    .form-btn.secondary:hover {
+        background-color: #f1f5f9;
+        color: #0f172a;
     }
 
     @media (max-width: 768px) {
+        .dashboard-layout {
+            height: auto;
+            overflow: auto;
+        }
+        .content-area {
+            overflow: visible;
+            height: auto;
+        }
+        .bracket-transition-layer {
+            overflow: auto;
+            height: max-content;
+        }
         .nav-container {
             flex-direction: column;
             align-items: flex-start;
             gap: 1rem;
         }
-        .nav-section {
+        .nav-section,
+        .nav-admin-section {
             width: 100%;
             display: flex;
             flex-direction: column;
             align-items: flex-start;
             gap: 0.5rem;
+        }
+        .nav-admin-section {
+            margin-left: 0;
+            padding-top: 0.5rem;
+            border-top: 1px solid #f1f5f9;
         }
         .btn-group {
             width: 100%;
