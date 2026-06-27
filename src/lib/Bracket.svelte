@@ -1011,18 +1011,51 @@
 
     async function handleDeleteStadium(id: string) {
         if (!bracketId || !sport) return;
-        if (!confirm("Delete this stadium?")) return;
-        await deleteDoc(
-            doc(
+        if (
+            !confirm(
+                "Delete this stadium? This will also clear it from all matches that use it.",
+            )
+        )
+            return;
+
+        // 1. Create a batch to handle both the deletion and the match updates
+        const batch = writeBatch(firestore);
+
+        // 2. Add the stadium deletion to the batch
+        const stadiumRef = doc(
+            firestore,
+            "sports",
+            sport,
+            "groups",
+            bracketId,
+            "stadiums",
+            id,
+        );
+        batch.delete(stadiumRef);
+
+        // 3. Find all matches currently using this stadium and clear their stadium fields
+        const affectedMatches = Object.values(dbMatches).filter(
+            (m) => m.stadiumId === id,
+        );
+
+        for (const match of affectedMatches) {
+            const matchRef = doc(
                 firestore,
                 "sports",
                 sport,
                 "groups",
                 bracketId,
-                "stadiums",
-                id,
-            ),
-        );
+                "bracket",
+                match.id,
+            );
+            batch.update(matchRef, {
+                stadiumId: null,
+                stadium: null,
+            });
+        }
+
+        // 4. Commit the changes
+        await batch.commit();
     }
 
     // --- Start time helpers ---
